@@ -1,33 +1,64 @@
-const { Client, GatewayIntentBits, Collection } = require('discord.js');
-const fs = require('fs');
-require('dotenv').config();
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-client.commands = new Collection();
+const { Client, GatewayIntentBits, Collection, Partials, Events } = require('discord.js');
+const path = require('path');
+require('./keepAlive'); // opcjonalny web server (Railway i tak trzyma 24/7)
 
-// Wczytywanie komend
-const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
-for (const file of commandFiles) {
-    const command = require(`./commands/${file}`);
-    client.commands.set(command.data.name, command);
+const TOKEN = process.env.TOKEN;
+if (!TOKEN) {
+  console.error('[FATAL] Missing TOKEN env var.');
+  process.exit(1);
 }
 
-// Event: ready
-client.once('ready', () => {
-    console.log(`Zalogowano jako ${client.user.tag}`);
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+  partials: [Partials.Channel]
 });
 
-// Event: interaction
-client.on('interactionCreate', async interaction => {
-    if (!interaction.isCommand()) return;
-    const command = client.commands.get(interaction.commandName);
-    if (!command) return;
-    try {
-        await command.execute(interaction);
-    } catch (error) {
-        console.error(error);
-        await interaction.reply({ content: 'Wystąpił błąd!', ephemeral: true });
+const guildCmd = require('./commands/guild');
+client.commands = new Collection();
+client.commands.set(guildCmd.data.name, guildCmd);
+
+client.once(Events.ClientReady, async (c) => {
+  console.log(`[BOT] Zalogowano jako ${c.user.tag}`);
+  try {
+    await c.application.commands.set([ guildCmd.data ]);
+    console.log('[BOT] Zarejestrowano /gildia');
+  } catch (e) {
+    console.error('[BOT] Nie udało się zarejestrować komend', e);
+  }
+});
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  try {
+    if (interaction.isChatInputCommand()) {
+      const cmd = client.commands.get(interaction.commandName);
+      if (!cmd) return;
+      await cmd.execute(interaction);
+      return;
     }
+
+    if (interaction.isButton()) {
+      const cmd = client.commands.get('gildia');
+      if (cmd?.handleButton) return cmd.handleButton(interaction);
+    }
+
+    if (interaction.isAnySelectMenu()) {
+      const cmd = client.commands.get('gildia');
+      if (cmd?.handleSelect) return cmd.handleSelect(interaction);
+    }
+
+    if (interaction.isModalSubmit()) {
+      const cmd = client.commands.get('gildia');
+      if (cmd?.handleModal) return cmd.handleModal(interaction);
+    }
+  } catch (e) {
+    console.error('[Interaction Error]', e);
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({ content: 'Wystąpił błąd. Spróbuj ponownie później.', components: [], embeds: [] }).catch(()=>{});
+    } else {
+      await interaction.reply({ content: 'Wystąpił błąd. Spróbuj ponownie później.', ephemeral: true }).catch(()=>{});
+    }
+  }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(TOKEN);
